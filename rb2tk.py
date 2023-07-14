@@ -1,7 +1,10 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import os
 import uuid
+import argparse
+import logging
 
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -108,8 +111,12 @@ class RekordboxReader:
 
     def read(self, path_xml : str) -> Library:
         l = Library()
-        l.track_dict = self.__parse_tracks(path_xml)
-        l.playl_tree = self.__parse_playlists(path_xml)
+        if not os.path.exists(path_xml):
+            logging.error("File doesn't exist: {}".format(path_xml))
+        else:
+            logging.debug("Reading: {}".format(path_xml))
+            l.track_dict = self.__parse_tracks(path_xml)
+            l.playl_tree = self.__parse_playlists(path_xml)
         return l
 
     def __parse_tracks(self, path_xml):
@@ -135,6 +142,7 @@ class RekordboxReader:
             t.cues.sort(key=lambda c: c.start)
             tracks[t.id] = t
 
+        logging.debug("{} tracks found.".format(len(tracks)))
         return tracks
 
     def __make_cue(self, cue_dict) -> Cue:
@@ -185,7 +193,6 @@ class TraktorWriter:
         root = self.__render_tracks(root, lib)
         root = self.__render_playlists(root, lib)
         self.__write_to_output(path_xml, root)
-        pass
 
     def __init_dom(self):
         root = ET.Element("NML", {"VERSION": "19"})
@@ -276,7 +283,6 @@ class TraktorWriter:
         """
         node = ET.SubElement(parent, "NODE")
         node.attrib["NAME"] = "$ROOT" if playl.name == "ROOT" else playl.name
-        print(playl.name)
 
         if playl.type == Playlist.Type.Folder:
             node.attrib["TYPE"] = "FOLDER"
@@ -296,34 +302,44 @@ class TraktorWriter:
         return node
 
     def __render_playlists(self, root, lib : Library):
-        playl_elem = root.find('PLAYLISTS')
-        playl_elem = self.__generate_node_recursive(playl_elem, lib.playl_tree, lib.track_dict)
+        if lib.playl_tree is not None:
+            playl_elem = root.find('PLAYLISTS')
+            self.__generate_node_recursive(playl_elem, lib.playl_tree, lib.track_dict)
         return root
 
     def __write_to_output(self, xml_path, root):
         xmlstr = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
         with codecs.open(xml_path, "w", "utf-8") as f:
-            f.write(xmlstr)
+            if f.write(xmlstr) is None:
+                logging.info("Wrote output to file: {}".format(xml_path))
+            else:
+                logging.error("Failed to write to location: {}".format(xml_path))
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # main
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 if __name__ == "__main__":
-    xml_in = 'rb.xml'
-    xml_out = 'tk.nml'
+    parser = argparse.ArgumentParser(
+                    prog='rb2tk.py',
+                    description='Convert a rekordbox XML library into a '
+                                'Traktor Pro 3 NML collection.',
+                    epilog='For more info: github.com/martinbloedorn')
+
+    parser.add_argument('rb_xml_in', nargs='?', default="rekordbox.xml",
+                        help="Path to rekordbox XML library export.")
+    parser.add_argument('tk_nml_out', nargs='?', default="collection.nml",
+                        help="Output path of generated Traktor NML collection.")
+    parser.add_argument('-v', '--verbose', action='count', default=0)
+
+    args = parser.parse_args()
+
+    logging.basicConfig(format='%(levelname)s @ %(funcName)s: %(message)s')
+    levels = [logging.WARNING, logging.INFO, logging.DEBUG]
+    logging.getLogger().setLevel(levels[min(args.verbose, len(levels)-1)])
 
     rr = RekordboxReader()
     tw = TraktorWriter()
-    lib = rr.read(xml_in)
-
-    # for track in lib.track_dict.values():
-    #     pass
-    #     print(track)
-    #     for c in track.cues:
-    #         print(c)
-    # print(lib.playl_tree)
-
-    tw.write(lib, xml_out)
-
+    lib = rr.read(args.rb_xml_in)
+    tw.write(lib, args.tk_nml_out)
 

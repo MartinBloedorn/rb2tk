@@ -1,5 +1,11 @@
 # rb2tk
 
+## To-Do
+
+- TraktorReader: 
+	- retain metadata from existing Traktor collection
+	- merge playlists with existing Traktor playlists
+
 ## Documentation
 
 ### rekordbox XML
