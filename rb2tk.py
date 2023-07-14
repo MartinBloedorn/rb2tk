@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 
 import os
+import uuid
 
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
 from enum import Enum
-from collections import namedtuple
 
 import codecs
 import urllib.parse
@@ -164,14 +164,12 @@ class RekordboxReader:
         p.type = Playlist.Type.Folder if a['Type'] == "0" else Playlist.Type.List
 
         for t_e in node_elem: # iterate over children
-            if a['Type'] == "1" and t_e.tag == "TRACK":
+            if p.type == Playlist.Type.List and t_e.tag == "TRACK":
                 p.children.append(t_e.attrib['Key'])
-            elif a['Type'] == "0" and t_e.tag == "NODE":
+            elif p.type == Playlist.Type.Folder and t_e.tag == "NODE":
                 p.children.append(self.__make_node_recursive(t_e))
 
         return p
-
-
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -179,11 +177,13 @@ class RekordboxReader:
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 class TraktorWriter:
     def __init__(self):
+        self.__sep = "/:"
         pass
 
     def write(self, lib : Library, path_xml : str):
         root = self.__init_dom()
-        root = self.__render_tracks(root, lib.track_dict.values())
+        root = self.__render_tracks(root, lib)
+        root = self.__render_playlists(root, lib)
         self.__write_to_output(path_xml, root)
         pass
 
@@ -206,7 +206,7 @@ class TraktorWriter:
         locdict = {}
         locdict["VOLUME"] = tokens.pop(1)
         locdict["FILE"] = tokens.pop(-1)
-        locdict["DIR"] = "/:".join(tokens)
+        locdict["DIR"] = self.__sep.join(tokens)
         return locdict
 
     def __generate_cue(self, cue : Cue) -> dict:
@@ -226,16 +226,17 @@ class TraktorWriter:
         cuedict["START"] = str(cue.start*1000.0)
         cuedict["LEN"] = str(cue.len*1000.0)
         cuedict["REPEATS"] = "-1"
-        cuedict["HOTCUE"] = str(cue.num)
+        cuedict["HOTCUE"] = str(cue.num if cue.num > -1 else 7)
         return cuedict
 
     def __generate_info(self, track : Track) -> dict:
         infodict = {}
-        infodict["BITRATE"] = "320"
+        infodict["BITRATE"] = "320" # TODO
         infodict["KEY"] = track.tonality
         return infodict
 
-    def __render_tracks(self, root, tracks):
+    def __render_tracks(self, root, lib : Library):
+        tracks = lib.track_dict.values()
         coll_elem = root.find('COLLECTION')
         coll_elem.attrib["ENTRIES"] = str(len(tracks))
 
@@ -255,6 +256,50 @@ class TraktorWriter:
 
         return root
 
+    def __generate_playl_track(self, track_id : str, track_dict : dict) -> dict:
+        """
+        Generates attribute dictionary for a PRIMARYKEY ENTRY of a PLAYLIST NODE.
+        """
+        track = track_dict[track_id]
+        locdict = self.__generate_location(track.fileurl)
+        attrib = {}
+        attrib["KEY"] = locdict["VOLUME"] + locdict["DIR"] + self.__sep + locdict["FILE"]
+        attrib["TYPE"] = "TRACK"
+        return attrib
+
+    def __generate_node_recursive(self, parent, playl : Playlist, track_dict : dict):
+        """
+        @param parent       Parent DOM node.
+        @param playl        Current Playlist node.
+        @param track_dict   Track dictionary to render track info.
+        @return Modified parent DOM
+        """
+        node = ET.SubElement(parent, "NODE")
+        node.attrib["NAME"] = "$ROOT" if playl.name == "ROOT" else playl.name
+        print(playl.name)
+
+        if playl.type == Playlist.Type.Folder:
+            node.attrib["TYPE"] = "FOLDER"
+            subnode = ET.SubElement(node, "SUBNODES", {"COUNT": str(len(playl.children))})
+            for c in playl.children:
+                self.__generate_node_recursive(subnode, c, track_dict)
+        elif playl.type == Playlist.Type.List:
+            node.attrib["TYPE"] = "PLAYLIST"
+            playlist = ET.SubElement(node, "PLAYLIST",
+                                     {"ENTRIES": str(len(playl.children)),
+                                      "TYPE": "LIST",
+                                      "UUID": "/db/Playlist/" + str(uuid.uuid4())})
+            for c in playl.children:
+                entry = ET.SubElement(playlist, "ENTRY")
+                ET.SubElement(entry, "PRIMARYKEY", self.__generate_playl_track(c, track_dict))
+
+        return node
+
+    def __render_playlists(self, root, lib : Library):
+        playl_elem = root.find('PLAYLISTS')
+        playl_elem = self.__generate_node_recursive(playl_elem, lib.playl_tree, lib.track_dict)
+        return root
+
     def __write_to_output(self, xml_path, root):
         xmlstr = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
         with codecs.open(xml_path, "w", "utf-8") as f:
@@ -270,16 +315,15 @@ if __name__ == "__main__":
 
     rr = RekordboxReader()
     tw = TraktorWriter()
-
     lib = rr.read(xml_in)
-    for track in lib.track_dict.values():
-        pass
-        # print(track)
-        # print(track.fileurl)
-        # for c in track.cues:
-        #     print(c)
-    print(lib.playl_tree)
 
-    # tw.write(lib, xml_out)
+    # for track in lib.track_dict.values():
+    #     pass
+    #     print(track)
+    #     for c in track.cues:
+    #         print(c)
+    # print(lib.playl_tree)
+
+    tw.write(lib, xml_out)
 
 
