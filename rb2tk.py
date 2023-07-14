@@ -70,10 +70,24 @@ class Playlist:
         List = 1
 
     def __init__(self):
-        self.id = ""
         self.name = ""
         self.type = Playlist.Type.Folder
         self.children = []
+
+    def __str__(self):
+        return self.__str_recursive(0)
+
+    def __str_recursive(self, level):
+        s = ""
+        if self.type == Playlist.Type.Folder:
+            s = "{}[{}]".format(' '*2*level, self.name)
+            for c in self.children:
+                s = s + "\n" + c.__str_recursive(level + 1)
+        elif self.type == Playlist.Type.List:
+            s = "{}{} ({} tracks)".format(' '*2*level, self.name, len(self.children))
+            # for c in self.children:
+            #     s = s + "\n{}- {}".format(' '*2*level, c)
+        return s
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -95,6 +109,7 @@ class RekordboxReader:
     def read(self, path_xml : str) -> Library:
         l = Library()
         l.track_dict = self.__parse_tracks(path_xml)
+        l.playl_tree = self.__parse_playlists(path_xml)
         return l
 
     def __parse_tracks(self, path_xml):
@@ -130,6 +145,33 @@ class RekordboxReader:
         c.name = cue_dict['Name']
         c.type = Cue.Type.Cue
         return c
+
+    def __parse_playlists(self, path_xml) -> Playlist:
+        tree = ET.parse(path_xml)
+        root = tree.getroot()
+        playl_root = None
+
+        playl_elem = root.find('PLAYLISTS')
+        for child in playl_elem:
+            playl_root = self.__make_node_recursive(child)
+
+        return playl_root
+
+    def __make_node_recursive(self, node_elem) -> Playlist:
+        a = node_elem.attrib
+        p = Playlist()
+        p.name = a['Name']
+        p.type = Playlist.Type.Folder if a['Type'] == "0" else Playlist.Type.List
+
+        for t_e in node_elem: # iterate over children
+            if a['Type'] == "1" and t_e.tag == "TRACK":
+                p.children.append(t_e.attrib['Key'])
+            elif a['Type'] == "0" and t_e.tag == "NODE":
+                p.children.append(self.__make_node_recursive(t_e))
+
+        return p
+
+
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -179,17 +221,18 @@ class TraktorWriter:
         cuedict["NAME"] = cue.name if cue.name != "" else \
                             "Loop" if is_loop else \
                             "Cue"  if is_hot else "Mem"
-        cuedict["LEN"] = str(cue.len*1000.0)
+        cuedict["DISPL_ORDER"] = "0"
         cuedict["TYPE"] = "5" if is_loop else "0"
         cuedict["START"] = str(cue.start*1000.0)
-        cuedict["HOTCUE"] = str(cue.num)
-        cuedict["DISPL_ORDER"] = "0"
+        cuedict["LEN"] = str(cue.len*1000.0)
         cuedict["REPEATS"] = "-1"
+        cuedict["HOTCUE"] = str(cue.num)
         return cuedict
 
     def __generate_info(self, track : Track) -> dict:
         infodict = {}
         infodict["BITRATE"] = "320"
+        infodict["KEY"] = track.tonality
         return infodict
 
     def __render_tracks(self, root, tracks):
@@ -230,11 +273,13 @@ if __name__ == "__main__":
 
     lib = rr.read(xml_in)
     for track in lib.track_dict.values():
-        print(track)
-        print(track.fileurl)
+        pass
+        # print(track)
+        # print(track.fileurl)
         # for c in track.cues:
         #     print(c)
+    print(lib.playl_tree)
 
-    tw.write(lib, xml_out)
+    # tw.write(lib, xml_out)
 
 
