@@ -5,6 +5,7 @@ import os
 import uuid
 import argparse
 import logging
+import configparser
 
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -25,13 +26,16 @@ class Cue:
           MemCue  -> num < 0
           Cue     -> num >=0
           + Loop  -> len > 0.0
-        'Type' will be used to annotate extra info when needed:
+        'Type' will be used to annotate extra info when needed.
+
+        Values of Cue, FadeIn, FadeOut and Load identical in RB and TK.
+        No Grid cue is available in RB.
         """
         Cue = 0
-        Load = 1
-        FadeIn = 2
-        FadeOut = 3
-        Grid = 4
+        FadeIn = 1
+        FadeOut = 2
+        Load = 3
+        Grid = 5
 
     def __init__(self):
         self.name = ""
@@ -229,11 +233,11 @@ class TraktorWriter:
                             "Loop" if is_loop else \
                             "Cue"  if is_hot else "Mem"
         cuedict["DISPL_ORDER"] = "0"
-        cuedict["TYPE"] = "5" if is_loop else "0"
+        cuedict["TYPE"] = str("5" if is_loop else cue.type.value)
         cuedict["START"] = str(cue.start*1000.0)
         cuedict["LEN"] = str(cue.len*1000.0)
         cuedict["REPEATS"] = "-1"
-        cuedict["HOTCUE"] = str(cue.num if cue.num > -1 else 7)
+        cuedict["HOTCUE"] = str(cue.num)
         return cuedict
 
     def __generate_info(self, track : Track) -> dict:
@@ -317,29 +321,89 @@ class TraktorWriter:
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+class OptionalOperations:
+    def __init__(self, config):
+        self.config = config
+        pass
+
+    def apply(self, lib : Library) -> Library:
+        lib.track_dict = self.__tk_add_grid_marker(lib.track_dict)
+        lib.track_dict = self.__tk_assign_all_cues(lib.track_dict)
+        return lib
+
+    def __tk_add_grid_marker(self, tracks : dict) -> dict:
+        if self.config.getboolean("Options", "GridMakerFromCue", fallback=False):
+            for tid in tracks:
+                t = tracks[tid]
+                if len(t.cues) > 0:
+                    gridcue = Cue()
+                    gridcue.start = t.cues[0].start
+                    gridcue.type = Cue.Type.Grid
+                    gridcue.name = "Grid"
+                    t.cues.insert(0, gridcue)
+                    tracks[tid] = t
+        return tracks
+
+    def __tk_assign_all_cues(self, tracks : dict) -> dict:
+        num = self.config.getint("Options", "AssignMemCueToPad", fallback=-1)
+        if num > -1:
+            for tid in tracks:
+                t = tracks[tid]
+                for i in range(0, len(t.cues)):
+                    if t.cues[i].num < 0 and t.cues[i].type != Cue.Type.Grid:
+                        t.cues[i].num = num
+        return tracks
+
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # main
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 if __name__ == "__main__":
+
+    ''' Args '''
     parser = argparse.ArgumentParser(
                     prog='rb2tk.py',
                     description='Convert a rekordbox XML library into a '
                                 'Traktor Pro 3 NML collection.',
                     epilog='For more info: github.com/martinbloedorn')
 
-    parser.add_argument('rb_xml_in', nargs='?', default="rekordbox.xml",
+    parser.add_argument('RekordboxXmlInput', nargs='?', default=None,
                         help="Path to rekordbox XML library export.")
-    parser.add_argument('tk_nml_out', nargs='?', default="collection.nml",
+    parser.add_argument('TraktorNmlOutput', nargs='?', default=None,
                         help="Output path of generated Traktor NML collection.")
+    parser.add_argument('-c', '--conf', action='store', default="rb2tk.ini")
     parser.add_argument('-v', '--verbose', action='count', default=0)
 
     args = parser.parse_args()
 
+    ''' Logging '''
     logging.basicConfig(format='%(levelname)s @ %(funcName)s: %(message)s')
     levels = [logging.WARNING, logging.INFO, logging.DEBUG]
     logging.getLogger().setLevel(levels[min(args.verbose, len(levels)-1)])
 
+    ''' Config '''
+    config = configparser.ConfigParser()
+    config.read(args.conf)
+
+    if args.RekordboxXmlInput is not None:
+        config["Library"]["RekordboxXmlInput"] = args.RekordboxXmlInput
+    elif not config.has_option("Library", "RekordboxXmlInput"):
+        config["Library"]["RekordboxXmlInput"] = "rekordbox.xml"
+
+    if args.TraktorNmlOutput is not None:
+        config["Library"]["TraktorNmlOutput"] = args.TraktorNmlOutput
+    elif not config.has_option("Library", "TraktorNmlOutput"):
+        config["Library"]["TraktorNmlOutput"] = "collection.nml"
+
+    ''' Main '''
     rr = RekordboxReader()
     tw = TraktorWriter()
-    lib = rr.read(args.rb_xml_in)
-    tw.write(lib, args.tk_nml_out)
+    oo = OptionalOperations(config)
+
+    lib = rr.read(config["Library"]["RekordboxXmlInput"])
+    lib = oo.apply(lib)
+    tw.write(lib, config["Library"]["TraktorNmlOutput"])
 
