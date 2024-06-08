@@ -5,6 +5,9 @@
 - TraktorReader: 
 	- retain metadata from existing Traktor collection
 	- merge playlists with existing Traktor playlists
+	- automatically backup a target file when overwriting it
+	- support different origin/destination paths
+	- rounding errors when exporting cues? they seem off by a bit in TK
 
 ## Documentation
 

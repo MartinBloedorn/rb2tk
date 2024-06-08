@@ -35,7 +35,7 @@ class Cue:
         FadeIn = 1
         FadeOut = 2
         Load = 3
-        Grid = 5
+        Grid = 4
 
     def __init__(self):
         self.name = ""
@@ -193,15 +193,26 @@ class TraktorWriter:
         pass
 
     def write(self, lib : Library, path_xml : str):
-        root = self.__init_dom()
+        root = self.__init_dom(path_xml)
         root = self.__render_tracks(root, lib)
         root = self.__render_playlists(root, lib)
         self.__write_to_output(path_xml, root)
 
-    def __init_dom(self):
-        root = ET.Element("NML", {"VERSION": "19"})
-        for e in ["MUSICNODES", "COLLECTION", "PLAYLISTS", "SETS"]:
-            ET.SubElement(root, e)
+    def __init_dom(self, path_xml : str):
+        root = None
+        
+        if os.path.exists(path_xml):
+            logging.debug("Reading preexisting output file: {}".format(path_xml))
+            try:
+                tree = ET.parse(path_xml)
+                root = tree.getroot()
+            except:
+                logging.warning("Existing output file isn't valid XML': {}".format(path_xml))
+
+        if root is None:
+            root = ET.Element("NML", {"VERSION": "19"})
+            for e in ["MUSICNODES", "COLLECTION", "PLAYLISTS", "SETS"]:
+                ET.SubElement(root, e)
         return root
 
     def __generate_location(self, fileurl : str) -> dict:
@@ -254,7 +265,8 @@ class TraktorWriter:
         for t in tracks:
             t_e = ET.SubElement(coll_elem, "ENTRY")
             t_e.attrib['TITLE'] = t.name
-            t_e.attrib['ARTIST'] = t.artist
+            t_e.attrib['ARTIST'] = t.tonality + " - " + t.artist
+            t_e.attrib['LOCK'] = "1"
 
             ET.SubElement(t_e, "LOCATION", self.__generate_location(t.fileurl))
             ET.SubElement(t_e, "ALBUM", {"TITLE": t.album})
@@ -310,11 +322,30 @@ class TraktorWriter:
             playl_elem = root.find('PLAYLISTS')
             self.__generate_node_recursive(playl_elem, lib.playl_tree, lib.track_dict)
         return root
+    
+    # Method happily lifted from https://stackoverflow.com/a/4590052
+    def __xml_indent(self, elem, level=0):
+        i = "\n" + level*"  "
+        j = "\n" + (level-1)*"  "
+        if len(elem):
+            if not elem.text or not elem.text.strip():
+                elem.text = i + "  "
+            if not elem.tail or not elem.tail.strip():
+                elem.tail = i
+            for subelem in elem:
+                self.__xml_indent(subelem, level+1)
+            if not elem.tail or not elem.tail.strip():
+                elem.tail = j
+        else:
+            if level and (not elem.tail or not elem.tail.strip()):
+                elem.tail = j
+        return elem   
 
     def __write_to_output(self, xml_path, root):
-        xmlstr = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
-        with codecs.open(xml_path, "w", "utf-8") as f:
-            if f.write(xmlstr) is None:
+        self.__xml_indent(root)
+        tree = ET.ElementTree(root)
+        with open(xml_path, 'w') as f:
+            if tree.write(f, encoding='unicode') is None:
                 logging.info("Wrote output to file: {}".format(xml_path))
             else:
                 logging.error("Failed to write to location: {}".format(xml_path))
