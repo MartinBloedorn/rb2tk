@@ -419,7 +419,7 @@ class OptionalOperations:
                 return 0.0
             
         except Exception as e:
-            print(f"Error reading LAME metadata: {e}")
+            logging.error(f"Error reading MP3 metadata of {mp3_file_path}: {e}")
             return 0.0
     
     def __tk_fix_cue_positions(self, tracks : dict) -> Library: 
@@ -441,7 +441,7 @@ class OptionalOperations:
                 continue
                 
             if abs(dcue) > 0.0:
-                logging.debug("Offseting cues in '{}' by '{}' seconds.".format(t.name, dcue))
+                logging.debug("Offsetting cues in '{}' by {} seconds.".format(t.name, dcue))
                 for i in range(0, len(t.cues)):
                     t.cues[i].start = t.cues[i].start + dcue
                 tracks[tid] = t

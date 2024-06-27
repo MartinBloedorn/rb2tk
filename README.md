@@ -29,4 +29,4 @@ Available `rb2tk.ini` options are:
 
 - [To-Do.md](doc/To-Do.md): Scratchpad for planned tasks and known bugs.
 - [References.md](doc/References.md): Useful resources.
-- [Traktor Cue Shift.md](doc/Trakto%20Cue%20Shift.md): Sources, information and notes on fixing the convoluted issue of shifted cues in Traktor.
+- [Traktor Cue Shift.md](doc/Traktor%20Cue%20Shift.md): Sources, information and notes on fixing the convoluted issue of shifted cues in Traktor.
