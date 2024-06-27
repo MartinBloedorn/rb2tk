@@ -1,29 +1,32 @@
 # rb2tk
 
-## To-Do
+`rb2tk` is a simple script to convert a Rekordbox XML export to a Traktor NML library. 
 
-- TraktorReader: 
-	- retain metadata from existing Traktor collection
-	- merge playlists with existing Traktor playlists
-	- automatically backup a target file when overwriting it
-	- support different origin/destination paths
-	- rounding errors when exporting cues? they seem off by a bit in TK
+The most straightforward use case is downloading and running the `rb2tk.py` in the same folder as a `rb2tk.ini` file containing settings, e.g.:
+
+```ini
+[Library]
+RekordboxXmlInput = /path/to/rekordbox.xml
+TraktorNmlOutput = /path/to/traktor.nml
+[Options]
+FixCuePositions = yes
+```
+
+`rb2tk.py` uses only standard Python libraries.
+
+## Settings
+
+Available `rb2tk.ini` options are:
+- `[Library]`
+  - `RekordboxXmlInput`: Local path to exported XML of Rekorbox collection.
+  - `TraktorNmlOutput`: Target path of generated collection.
+  - `MergeOutput` (`yes/no`): Experimental/buggy. If the file at `TraktorNmlOutput` already exists, the script will attempt merging the new conversion with the target collection. 
+- `[Options]`
+  - `FixCuePositions` (`yes/no`): Will attempt to fix cue shifts/offsets that happen due to how Traktor handles MP3 and M4A/AAC files. See the **Documentation** section below for more information.
+  - `GridMarkerFromCue` (`yes/no`): Will create a grid marker from the first Hot- or Memory Cue detected.
 
 ## Documentation
 
-### rekordbox XML
-
-[Link](https://cdn.rekordbox.com/files/20200410160904/xml_format_list.pdf)
-
-### Traktor NML
-
-#### Cue Types
-
-```xml
-<CUE_V2 NAME="Cue" DISPL_ORDER="0" TYPE="0" START="310.000000" LEN="0.000000" REPEATS="-1" HOTCUE="0"></CUE_V2>
-<CUE_V2 NAME="AutoGrid" DISPL_ORDER="0" TYPE="4" START="332.858643" LEN="0.000000" REPEATS="-1" HOTCUE="-1"></CUE_V2>
-<CUE_V2 NAME="Fade-In" DISPL_ORDER="0" TYPE="1" START="4172.861689" LEN="0.000000" REPEATS="-1" HOTCUE="1"></CUE_V2>
-<CUE_V2 NAME="Fade-Out" DISPL_ORDER="0" TYPE="2" START="8012.864736" LEN="0.000000" REPEATS="-1" HOTCUE="2"></CUE_V2>
-<CUE_V2 NAME="Load" DISPL_ORDER="0" TYPE="3" START="11852.867783" LEN="0.000000" REPEATS="-1" HOTCUE="3"></CUE_V2>
-<CUE_V2 NAME="Loop" DISPL_ORDER="0" TYPE="5" START="15692.870830" LEN="3840.003047" REPEATS="-1" HOTCUE="-1"></CUE_V2>
-```
+- [To-Do.md](doc/To-Do.md): Scratchpad for planned tasks and known bugs.
+- [References.md](doc/References.md): Useful resources.
+- [Traktor Cue Shift.md](doc/Trakto%20Cue%20Shift.md): Sources, information and notes on fixing the convoluted issue of shifted cues in Traktor.

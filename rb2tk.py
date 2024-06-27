@@ -7,6 +7,7 @@ import argparse
 import logging
 import configparser
 
+import urllib.parse
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
@@ -110,7 +111,8 @@ class Library:
 # RekordboxReader
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 class RekordboxReader:
-    def __init__(self):
+    def __init__(self, config):
+        self.config = config
         pass
 
     def read(self, path_xml : str) -> Library:
@@ -188,7 +190,8 @@ class RekordboxReader:
 # TraktorWriter
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 class TraktorWriter:
-    def __init__(self):
+    def __init__(self, config):
+        self.config = config
         self.__sep = "/:"
         pass
 
@@ -201,7 +204,8 @@ class TraktorWriter:
     def __init_dom(self, path_xml : str):
         root = None
         
-        if os.path.exists(path_xml):
+        if self.config.getboolean("Library", "MergeOutput", fallback=True) \
+            and os.path.exists(path_xml):
             logging.debug("Reading preexisting output file: {}".format(path_xml))
             try:
                 tree = ET.parse(path_xml)
@@ -213,6 +217,7 @@ class TraktorWriter:
             root = ET.Element("NML", {"VERSION": "19"})
             for e in ["MUSICNODES", "COLLECTION", "PLAYLISTS", "SETS"]:
                 ET.SubElement(root, e)
+                
         return root
 
     def __generate_location(self, fileurl : str) -> dict:
@@ -258,15 +263,14 @@ class TraktorWriter:
         return infodict
 
     def __render_tracks(self, root, lib : Library):
-        tracks = lib.track_dict.values()
+        track_dict = dict(lib.track_dict) # copy
         coll_elem = root.find('COLLECTION')
-        coll_elem.attrib["ENTRIES"] = str(len(tracks))
-
-        for t in tracks:
-            t_e = ET.SubElement(coll_elem, "ENTRY")
+        
+        def __render_track(t_e, t, lock=True):
+            t_e.attrib['UUID'] = str(t.id) # add UUID for internal use
             t_e.attrib['TITLE'] = t.name
             t_e.attrib['ARTIST'] = t.tonality + " - " + t.artist
-            t_e.attrib['LOCK'] = "1"
+            t_e.attrib['LOCK'] = "1" if lock else "0"
 
             ET.SubElement(t_e, "LOCATION", self.__generate_location(t.fileurl))
             ET.SubElement(t_e, "ALBUM", {"TITLE": t.album})
@@ -276,7 +280,20 @@ class TraktorWriter:
                                          "BPM": str(t.bpm)})
             for c in t.cues:
                 ET.SubElement(t_e, "CUE_V2", self.__generate_cue(c))
-
+        
+        for t_e in coll_elem:
+            uuid = t_e.attrib.get('UUID')
+            lock = t_e.attrib.get('LOCK')
+            if uuid is not None and uuid in track_dict:
+                if lock != "1":
+                    __render_track(t_e, track_dict[uuid], False)
+                del track_dict[uuid]
+            
+        for uuid, t in track_dict.items():
+            t_e = ET.SubElement(coll_elem, "ENTRY")
+            __render_track(t_e, t, False)
+            
+        coll_elem.attrib["ENTRIES"] = str(len(coll_elem))
         return root
 
     def __generate_playl_track(self, track_id : str, track_dict : dict) -> dict:
@@ -345,6 +362,7 @@ class TraktorWriter:
         self.__xml_indent(root)
         tree = ET.ElementTree(root)
         with open(xml_path, 'w') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n')
             if tree.write(f, encoding='unicode') is None:
                 logging.info("Wrote output to file: {}".format(xml_path))
             else:
@@ -354,6 +372,7 @@ class TraktorWriter:
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 #
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+    
 
 class OptionalOperations:
     def __init__(self, config):
@@ -361,31 +380,93 @@ class OptionalOperations:
         pass
 
     def apply(self, lib : Library) -> Library:
-        lib.track_dict = self.__tk_add_grid_marker(lib.track_dict)
-        lib.track_dict = self.__tk_assign_all_cues(lib.track_dict)
-        return lib
+        if self.config.getboolean("Options", "FixCuePositions", fallback=True):
+            lib.track_dict = self.__tk_fix_cue_positions(lib.track_dict)
 
-    def __tk_add_grid_marker(self, tracks : dict) -> dict:
-        if self.config.getboolean("Options", "GridMakerFromCue", fallback=False):
-            for tid in tracks:
-                t = tracks[tid]
-                if len(t.cues) > 0:
-                    gridcue = Cue()
-                    gridcue.start = t.cues[0].start
-                    gridcue.type = Cue.Type.Grid
-                    gridcue.name = "Grid"
-                    t.cues.insert(0, gridcue)
-                    tracks[tid] = t
+        if self.config.getboolean("Options", "GridMakerFromCue", fallback=False):    
+            lib.track_dict = self.__tk_add_grid_marker(lib.track_dict)
+
+        cue_num = self.config.getint("Options", "AssignMemCueToPad", fallback=-1)
+        lib.track_dict = self.__tk_assign_all_cues(lib.track_dict, cue_num)
+        return lib
+    
+    def __get_mp3_offset(self, mp3_file_path):
+        offset_44k1 = 0.026 # Offsets in ms for each sample rate, as per RB release notes.
+        offset_48k0 = 0.024
+
+        def to_int7(buf):
+            return (buf[0] << 21) | (buf[1] << 14) | (buf[2] << 7) | buf[3]
+        # def to_int(buf):
+        #  return (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]
+        
+        try:
+            with open(mp3_file_path, 'rb') as f:
+                f.seek(0)
+                header = f.read(10)
+                if header[:3] != b'ID3':
+                    return 0.0
+                
+                size = to_int7(header[6:])
+                f.seek(size, 1)
+                buffer = f.read(192)
+
+                sample_rate_index = (buffer[2] >> 2) & 3
+                tag = buffer[36:40]
+                enc = buffer[156:160]
+
+                if (tag == b'Xing' or tag == b'Info') and (enc == b'Lavc' or enc == b'Lavf'):
+                    return offset_48k0 if sample_rate_index == 1 else offset_44k1
+                return 0.0
+            
+        except Exception as e:
+            print(f"Error reading LAME metadata: {e}")
+            return 0.0
+    
+    def __tk_fix_cue_positions(self, tracks : dict) -> Library: 
+        """
+        Check doc/Traktor Cue Shift.md for more information on this function.
+        """       
+        for tid in tracks:
+            t = tracks[tid]
+            dcue = 0.0
+            _, extension = os.path.splitext(t.fileurl)
+
+            if extension == ".m4a":
+                dcue = -0.048
+            elif extension == ".mp3":
+                ourl = urllib.parse.urlparse(t.fileurl)
+                path = urllib.parse.unquote(ourl.path)
+                dcue = self.__get_mp3_offset(path)
+            else:
+                continue
+                
+            if abs(dcue) > 0.0:
+                logging.debug("Offseting cues in '{}' by '{}' seconds.".format(t.name, dcue))
+                for i in range(0, len(t.cues)):
+                    t.cues[i].start = t.cues[i].start + dcue
+                tracks[tid] = t
+
         return tracks
 
-    def __tk_assign_all_cues(self, tracks : dict) -> dict:
-        num = self.config.getint("Options", "AssignMemCueToPad", fallback=-1)
-        if num > -1:
+    def __tk_add_grid_marker(self, tracks : dict) -> dict:
+        for tid in tracks:
+            t = tracks[tid]
+            if len(t.cues) > 0:
+                gridcue = Cue()
+                gridcue.start = t.cues[0].start
+                gridcue.type = Cue.Type.Grid
+                gridcue.name = "Grid"
+                t.cues.insert(0, gridcue)
+                tracks[tid] = t
+        return tracks
+
+    def __tk_assign_all_cues(self, tracks : dict, cue_num) -> dict:
+        if cue_num > -1:
             for tid in tracks:
                 t = tracks[tid]
                 for i in range(0, len(t.cues)):
                     if t.cues[i].num < 0 and t.cues[i].type != Cue.Type.Grid:
-                        t.cues[i].num = num
+                        t.cues[i].num = cue_num
         return tracks
 
 
@@ -430,8 +511,8 @@ if __name__ == "__main__":
         config["Library"]["TraktorNmlOutput"] = "collection.nml"
 
     ''' Main '''
-    rr = RekordboxReader()
-    tw = TraktorWriter()
+    rr = RekordboxReader(config)
+    tw = TraktorWriter(config)
     oo = OptionalOperations(config)
 
     lib = rr.read(config["Library"]["RekordboxXmlInput"])
