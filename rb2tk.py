@@ -7,7 +7,6 @@ import argparse
 import logging
 import configparser
 
-import urllib.parse
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
@@ -255,7 +254,15 @@ class TraktorWriter:
         cuedict["REPEATS"] = "-1"
         cuedict["HOTCUE"] = str(cue.num)
         return cuedict
-
+    
+    @staticmethod
+    def __get_child(parent, tag : str, attrib : dict = {}):
+        """
+        Retrieves or creates a child af a given tag under a certain parent. 
+        """
+        node = parent.find(tag)
+        return node if node is not None else ET.SubElement(parent, tag, attrib)
+    
     def __generate_info(self, track : Track) -> dict:
         infodict = {}
         infodict["BITRATE"] = "320" # TODO
@@ -272,12 +279,14 @@ class TraktorWriter:
             t_e.attrib['ARTIST'] = t.tonality + " - " + t.artist
             t_e.attrib['LOCK'] = "1" if lock else "0"
 
-            ET.SubElement(t_e, "LOCATION", self.__generate_location(t.fileurl))
-            ET.SubElement(t_e, "ALBUM", {"TITLE": t.album})
-            ET.SubElement(t_e, "INFO", self.__generate_info(t))
-            ET.SubElement(t_e, "MODIFICATION_INFO", {"AUTHOR_TYPE": "user"})
-            ET.SubElement(t_e, "TEMPO", {"BPM_QUALITY": "100",
-                                         "BPM": str(t.bpm)})
+            self.__get_child(t_e, "LOCATION", self.__generate_location(t.fileurl))
+            self.__get_child(t_e, "ALBUM", {"TITLE": t.album})
+            self.__get_child(t_e, "INFO", self.__generate_info(t))
+            self.__get_child(t_e, "MODIFICATION_INFO", {"AUTHOR_TYPE": "user"})
+            self.__get_child(t_e, "TEMPO", {"BPM_QUALITY": "100", "BPM": str(t.bpm)})
+
+            for e in t_e.findall("CUE_V2"):
+                t_e.remove(e)
             for c in t.cues:
                 ET.SubElement(t_e, "CUE_V2", self.__generate_cue(c))
         
