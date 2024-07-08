@@ -14,6 +14,7 @@ from enum import Enum
 
 import codecs
 import urllib.parse
+import urllib.request
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -370,12 +371,10 @@ class TraktorWriter:
     def __write_to_output(self, xml_path, root):
         self.__xml_indent(root)
         tree = ET.ElementTree(root)
-        with open(xml_path, 'w') as f:
-            f.write('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n')
-            if tree.write(f, encoding='unicode') is None:
-                logging.info("Wrote output to file: {}".format(xml_path))
-            else:
-                logging.error("Failed to write to location: {}".format(xml_path))
+        if tree.write(xml_path, encoding='utf-8', xml_declaration=True) is None:
+            logging.info("Wrote output to file: {}".format(xml_path))
+        else:
+            logging.error("Failed to write to location: {}".format(xml_path))
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -392,7 +391,7 @@ class OptionalOperations:
         if self.config.getboolean("Options", "FixCuePositions", fallback=True):
             lib.track_dict = self.__tk_fix_cue_positions(lib.track_dict)
 
-        if self.config.getboolean("Options", "GridMakerFromCue", fallback=False):    
+        if self.config.getboolean("Options", "GridMarkerFromCue", fallback=False):    
             lib.track_dict = self.__tk_add_grid_marker(lib.track_dict)
 
         cue_num = self.config.getint("Options", "AssignMemCueToPad", fallback=-1)
@@ -444,7 +443,8 @@ class OptionalOperations:
                 dcue = -0.048
             elif extension == ".mp3":
                 ourl = urllib.parse.urlparse(t.fileurl)
-                path = urllib.parse.unquote(ourl.path)
+                path = os.path.normpath(ourl.path)
+                path = urllib.request.url2pathname(path)
                 dcue = self.__get_mp3_offset(path)
             else:
                 continue
