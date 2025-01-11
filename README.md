@@ -24,6 +24,7 @@ Available `rb2tk.ini` options are:
 - `[Options]`
   - `FixCuePositions` (`yes/no`): Will attempt to fix cue shifts/offsets that happen due to how Traktor handles MP3 and M4A/AAC files. See the **Documentation** section below for more information.
   - `GridMarkerFromCue` (`yes/no`): Will create a grid marker from the first Hot- or Memory Cue detected.
+  - `LoopQuantization` (`float`): Quantizes exported Cue-Loops to the selected beat fraction (i.e., `1.0` = quarter note, `0.5` = eigth note, etc.).
 
 ## Documentation
 

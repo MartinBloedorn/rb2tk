@@ -455,7 +455,7 @@ class OptionalOperations:
         if self.config.getboolean("Options", "FixCuePositions", fallback=True):
             lib.track_dict = self.__tk_fix_cue_positions(lib.track_dict)
 
-        quantization = self.config.getfloat("Options", "QuantizeLoops", fallback=0.0)
+        quantization = self.config.getfloat("Options", "LoopQuantization", fallback=0.0)
         if quantization >= 1.0/8.0: # minimum 32nd note quantization
             lib.track_dict = self.__tk_quantize_loops(lib.track_dict, quantization)
 
