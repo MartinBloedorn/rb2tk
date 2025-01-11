@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 import uuid
 import argparse
 import logging
@@ -61,6 +62,7 @@ class Track:
         self.genre = ""
         self.comments = ""
         self.bpm = 120.0
+        self.duration = 0
         self.tonality = ""
         self.fileurl = ""
         self.label = ""
@@ -143,6 +145,7 @@ class RekordboxReader:
             t.name = a['Name']
             t.artist = a['Artist']
             t.bpm = float(a['AverageBpm'])
+            t.duration = float(a['TotalTime'])
             t.genre = a['Genre']
             t.comments = a['Comments']
             t.tonality = a['Tonality']
@@ -164,7 +167,7 @@ class RekordboxReader:
     def __make_cue(self, cue_dict) -> Cue:
         c = Cue()
         c.start = float(cue_dict['Start'])
-        c.len = float(cue_dict['End']) - c.start if 'End' in cue_dict else 0.0
+        c.len = (float(cue_dict['End']) - c.start) if 'End' in cue_dict else 0.0
         c.num = int(cue_dict['Num'])
         c.name = cue_dict['Name']
         c.type = Cue.Type.Cue
@@ -239,9 +242,16 @@ class TraktorWriter:
         path = os.path.normpath(ourl.path)   
         path = urllib.request.url2pathname(path)     
         tokens = path.split(os.sep)
-
         locdict = {}
-        locdict["VOLUME"] = tokens.pop(1) if len(tokens) > 1 else ""
+
+        # TODO: fix this monstruosity
+        if sys.platform == "darwin":
+            locdict["VOLUMEID"] = "Macintosh HD"
+            locdict["VOLUME"] = "Macintosh HD"
+        else:
+            locdict["VOLUMEID"] = ""
+            locdict["VOLUME"] = tokens.pop(1) if len(tokens) > 1 else "" 
+
         locdict["FILE"] = tokens.pop(-1) if len(tokens) > 0 else ""
         locdict["DIR"] = self.__sep.join(tokens)
         return locdict
@@ -300,25 +310,33 @@ class TraktorWriter:
             t_e.attrib['ARTIST'] = t.artist
             t_e.attrib['LOCK'] = "1" if lock else "0"
 
-            self.__get_child(t_e, "LOCATION", self.__generate_location(t.fileurl))
+            # self.__get_child(t_e, "LOCATION", self.__generate_location(t.fileurl))
             self.__get_child(t_e, "ALBUM", {"TITLE": t.album})
             self.__get_child(t_e, "INFO", self.__generate_info(t))
             self.__get_child(t_e, "MODIFICATION_INFO", {"AUTHOR_TYPE": "user"})
             self.__get_child(t_e, "TEMPO", {"BPM_QUALITY": "100", "BPM": str(t.bpm)})
 
+            # Always overwrite location to ensure we're synced: 
+            self.__get_child(t_e, "LOCATION").attrib = self.__generate_location(t.fileurl)
+
             for e in t_e.findall("CUE_V2"):
                 t_e.remove(e)
             for c in t.cues:
                 ET.SubElement(t_e, "CUE_V2", self.__generate_cue(c))
+            return t_e  
         
-        for t_e in coll_elem:
+        for t_e in coll_elem.findall('ENTRY'):
             lock = t_e.attrib.get('LOCK')
             title = t_e.attrib.get('TITLE')
             artist = t_e.attrib.get('ARTIST')
+            
+            location = t_e.find('LOCATION')
+            filename = location.attrib.get('FILE') if location is not None else ""
 
             for k in list(track_dict.keys()):
                 t = track_dict[k]
-                if t.artist == artist and t.name == title:
+                basename = os.path.basename(urllib.request.url2pathname(t.fileurl))
+                if basename == filename:
                     if lock != "1":
                         __render_track(t_e, t, False)
                     del track_dict[k]
@@ -326,6 +344,7 @@ class TraktorWriter:
         for uuid, t in track_dict.items():
             t_e = ET.SubElement(coll_elem, "ENTRY")
             __render_track(t_e, t, False)
+            logging.info(f"Added '{t.name}' by '{t.artist}' to collection.")
             
         coll_elem.attrib["ENTRIES"] = str(len(coll_elem))
         return root
@@ -334,12 +353,15 @@ class TraktorWriter:
         """
         Generates attribute dictionary for a PRIMARYKEY ENTRY of a PLAYLIST NODE.
         """
-        track = track_dict[track_id]
-        locdict = self.__generate_location(track.fileurl)
-        attrib = {}
-        attrib["KEY"] = locdict["VOLUME"] + locdict["DIR"] + self.__sep + locdict["FILE"]
-        attrib["TYPE"] = "TRACK"
-        return attrib
+        if track_id in track_dict:
+            track = track_dict[track_id]
+            locdict = self.__generate_location(track.fileurl)
+            attrib = {}
+            attrib["KEY"] = locdict["VOLUME"] + locdict["DIR"] + self.__sep + locdict["FILE"]
+            attrib["TYPE"] = "TRACK"
+            return attrib
+        else:
+            return None
 
     def __generate_node_recursive(self, parent, playl : Playlist, track_dict : dict):
         """
@@ -349,10 +371,6 @@ class TraktorWriter:
         @return Modified parent DOM
         """        
         node = parent if playl.name == "ROOT" else ET.SubElement(parent, "NODE", {"NAME": playl.name})
-        
-        # node = self.__get_child(parent, "NODE", {"NAME": "$ROOT" if playl.name == "ROOT" else playl.name})
-        # node = ET.SubElement(parent, "NODE")
-        # node.attrib["NAME"] = "$ROOT" if playl.name == "ROOT" else playl.name
 
         if playl.type == Playlist.Type.Folder:
             node.attrib["TYPE"] = "FOLDER"
@@ -366,13 +384,18 @@ class TraktorWriter:
                                       "TYPE": "LIST",
                                       "UUID": "/db/Playlist/" + str(uuid.uuid4())})
             for c in playl.children:
-                entry = ET.SubElement(playlist, "ENTRY")
-                ET.SubElement(entry, "PRIMARYKEY", self.__generate_playl_track(c, track_dict))
+                playl_track = self.__generate_playl_track(c, track_dict)
+                if playl_track is not None:
+                    entry = ET.SubElement(playlist, "ENTRY")
+                    ET.SubElement(entry, "PRIMARYKEY", self.__generate_playl_track(c, track_dict))
+                else: 
+                    logging.info(f"Skipping missing track ID {c} in playlist '{playl.name}'")
 
         return node
 
     def __render_playlists(self, root, lib : Library):
-        rb_playlist_name = "rekorbox"
+        # All rekordbox playlists will be exported under this folder; manual changes to it will be overwritten.
+        rb_playlist_name = "rekordbox"
 
         if lib.playl_tree is not None:
             playlists_e = root.find('PLAYLISTS')
@@ -380,11 +403,11 @@ class TraktorWriter:
             psubnodes_e = self.__get_child(playlroot_e, "SUBNODES", {"COUNT": "1"})
             
             for node in psubnodes_e.findall("NODE"):
-                if node.attrib["TYPE"] == "PLAYLIST" and node.attrib["NAME"] == rb_playlist_name:
-                    playlroot_e.remove(node)
+                if node.attrib["TYPE"] == "FOLDER" and node.attrib["NAME"] == rb_playlist_name:
+                    psubnodes_e.remove(node)
                     break
 
-            exportroot_e = ET.SubElement(psubnodes_e, "NODE", {"NAME": rb_playlist_name})
+            exportroot_e = ET.SubElement(psubnodes_e, "NODE", {"NAME": rb_playlist_name, "TYPE": "FOLDER"})
         
             self.__generate_node_recursive(exportroot_e, lib.playl_tree, lib.track_dict)
         return root
@@ -427,16 +450,43 @@ class OptionalOperations:
         pass
 
     def apply(self, lib : Library) -> Library:
+        lib.track_dict = self.__prune_missing_tracks(lib.track_dict)
+
         if self.config.getboolean("Options", "FixCuePositions", fallback=True):
             lib.track_dict = self.__tk_fix_cue_positions(lib.track_dict)
+
+        quantization = self.config.getfloat("Options", "QuantizeLoops", fallback=0.0)
+        if quantization >= 1.0/8.0: # minimum 32nd note quantization
+            lib.track_dict = self.__tk_quantize_loops(lib.track_dict, quantization)
 
         if self.config.getboolean("Options", "GridMarkerFromCue", fallback=False):    
             lib.track_dict = self.__tk_add_grid_marker(lib.track_dict)
 
-        cue_num = self.config.getint("Options", "AssignMemCueToPad", fallback=-1)
-        lib.track_dict = self.__tk_assign_all_cues(lib.track_dict, cue_num)
+        if self.config.getboolean("Options", "S8_AutoAssignCueToPads", fallback=False):
+            lib.track_dict = self.__tk_s8_assign_cues_to_pads(lib.track_dict)
+        
         return lib
     
+    def __prune_missing_tracks(self, tracks : dict) -> Library: 
+        """
+        Remove tracks with missing files from exported library.
+        """
+        pruned_ids = []
+
+        for tid in tracks:
+            t = tracks[tid]
+            ourl = urllib.parse.urlparse(t.fileurl)
+            path = os.path.normpath(ourl.path)
+            path = urllib.request.url2pathname(path)
+            if not os.path.isfile(path):
+                logging.info(f"Pruning missing track: {t.name} @ {t.fileurl}")
+                pruned_ids.append(tid)
+
+        for tid in pruned_ids:            
+            del tracks[tid]
+        
+        return tracks
+
     def __get_mp3_offset(self, mp3_file_path):
         offset_44k1 = 0.026 # Offsets in ms for each sample rate, as per RB release notes.
         offset_48k0 = 0.024
@@ -493,6 +543,22 @@ class OptionalOperations:
                 tracks[tid] = t
 
         return tracks
+    
+    def __tk_quantize_loops(self, tracks : dict, quantization) -> Library:
+        """
+        Quantizes loops. 
+        @param tracks       Track collection.
+        @param quantization Beat amount (or fraction) to quantize to, e.g, 1.0=quarter note, 0.5=eight note.
+        """
+        for tid in tracks:
+            t = tracks[tid]
+            if t.bpm > 0:
+                k = float(quantization)*60.0/t.bpm 
+                for i in range(0, len(t.cues)):
+                    n = float(round(t.cues[i].len/k))
+                    t.cues[i].len = n*k
+
+        return tracks
 
     def __tk_add_grid_marker(self, tracks : dict) -> dict:
         """
@@ -512,20 +578,20 @@ class OptionalOperations:
                 tracks[tid] = t
         return tracks
 
-    def __tk_assign_all_cues(self, tracks : dict, cue_num) -> dict:
+    def __tk_s8_assign_cues_to_pads(self, tracks : dict) -> dict:
         """
         Attribute pads to (a subset) of cues, so that they're visible on the S5/S8.
+        Behavior is hard-coded to the author's (me) convenience :)
         """
-        if cue_num > -1:
-            for tid in tracks:
-                t = tracks[tid]
-                pad = 7
-                for i in reversed(range(0, len(t.cues))):
-                    if t.cues[i].num < 0 and t.cues[i].type != Cue.Type.Grid:
-                        if t.cues[i].len == 0.0:
-                            t.cues[i].num = pad if pad >= 5 else -1 # cue_num
-                            t.cues[i].type = Cue.Type.FadeOut
-                        pad = pad - 1
+        for tid in tracks:
+            t = tracks[tid]
+            pad = 7
+            for i in reversed(range(0, len(t.cues))):
+                if t.cues[i].num < 0 and t.cues[i].type != Cue.Type.Grid:
+                    t.cues[i].num = pad if pad >= 5 else -1
+                    # memcues on the last half are FadeOuts; Load otherwise (FadeIns cause Traktor to autoplay)
+                    t.cues[i].type = Cue.Type.FadeOut if (t.cues[i].start / t.duration) > 0.5 else Cue.Type.Load
+                    pad = pad - 1
         return tracks
 
 
