@@ -7,6 +7,7 @@ import uuid
 import argparse
 import logging
 import configparser
+import subprocess
 
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -19,7 +20,7 @@ import urllib.request
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# Cue
+# Cue & GridMarker
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 class Cue:
     class Type(Enum):
@@ -38,6 +39,7 @@ class Cue:
         FadeOut = 2
         Load = 3
         Grid = 4
+        Loop = 5
 
     def __init__(self):
         self.name = ""
@@ -48,6 +50,12 @@ class Cue:
 
     def __str__(self):
         return "{} @{} [{}]".format(repr(self.type), self.start, self.num)
+
+
+class GridMarker:
+    def __init__(self):
+        self.start = 0.0
+        self.bpm = 0.0
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -67,6 +75,7 @@ class Track:
         self.fileurl = ""
         self.label = ""
         self.cues = []
+        self.grids = []
         self.indate = ""
         self.rating = 0
 
@@ -114,6 +123,15 @@ class Library:
         self.playl_tree = None
 
 
+class Utils:
+    @staticmethod
+    def url2path(url : str) -> str:
+        ourl = urllib.parse.urlparse(url)
+        path = os.path.normpath(ourl.path)
+        path = urllib.request.url2pathname(path)
+        return path
+
+
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # RekordboxReader
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -158,6 +176,9 @@ class RekordboxReader:
             for mark_elem in track_elem.iter('POSITION_MARK'):
                 t.cues.append(self.__make_cue(mark_elem.attrib))
 
+            for tempo_elem in track_elem.iter('TEMPO'):
+                t.grids.append(self.__make_grid_marker(tempo_elem.attrib))
+
             t.cues.sort(key=lambda c: c.start)
             tracks[t.id] = t
 
@@ -172,6 +193,12 @@ class RekordboxReader:
         c.name = cue_dict['Name']
         c.type = Cue.Type.Cue
         return c
+
+    def __make_grid_marker(self, marker_dict) -> Cue:
+        g = GridMarker()
+        g.start = float(marker_dict['Inizio'])
+        g.bpm = float(marker_dict['Bpm'])
+        return g
 
     def __parse_playlists(self, path_xml) -> Playlist:
         tree = ET.parse(path_xml)
@@ -205,6 +232,7 @@ class RekordboxReader:
 class TraktorWriter:
     def __init__(self, config):
         self.config = config
+        self.volume = ""
         self.__sep = "/:"
         pass
 
@@ -232,26 +260,33 @@ class TraktorWriter:
                 ET.SubElement(root, e)
                 
         return root
+    
+    def __get_path_volume(self, path : str) -> str:
+        """
+        For macOS only. Extracts the name of the current '/' Volume.
+        
+        #TODO: This still ignores the input path, and will default to the 'Macintosh HD'. Fix it.
+        """
+        if sys.platform == "darwin" and self.volume == "":
+            self.volume = str(subprocess.run(["diskutil info -plist / | plutil -extract VolumeName raw - -o -"], 
+                                               shell=True, capture_output=True).stdout.strip())
+        return self.volume
 
     def __generate_location(self, fileurl : str) -> dict:
         """
         Generates attribute dictionary for a LOCATION element from a file URL.
         {"DIR": ..., "FILE", ..., "VOLUME": ...}
         """
-        ourl = urllib.parse.urlparse(fileurl)
-        path = os.path.normpath(ourl.path)   
-        path = urllib.request.url2pathname(path)     
+        path = Utils.url2path(fileurl)
         tokens = path.split(os.sep)
         locdict = {}
 
-        # TODO: fix this monstruosity
-        if sys.platform == "darwin":
-            locdict["VOLUMEID"] = "Macintosh HD"
-            locdict["VOLUME"] = "Macintosh HD"
+        if sys.platform == "darwin":            
+            locdict["VOLUME"] = self.__get_path_volume(path)
         else:
-            locdict["VOLUMEID"] = ""
             locdict["VOLUME"] = tokens.pop(1) if len(tokens) > 1 else "" 
 
+        locdict["VOLUMEID"] = ""
         locdict["FILE"] = tokens.pop(-1) if len(tokens) > 0 else ""
         locdict["DIR"] = self.__sep.join(tokens)
         return locdict
@@ -275,11 +310,19 @@ class TraktorWriter:
         cuedict = {}
         cuedict["NAME"] = name
         cuedict["DISPL_ORDER"] = "0"
-        cuedict["TYPE"] = str("5" if is_loop else cue.type.value)
+        cuedict["TYPE"] = str(Cue.Type.Loop.value if is_loop else cue.type.value)
         cuedict["START"] = str(cue.start*1000.0)
         cuedict["LEN"] = str(cue.len*1000.0)
         cuedict["REPEATS"] = "-1"
         cuedict["HOTCUE"] = str(cue.num)
+        return cuedict
+    
+    def __generate_grid_marker(self, marker : GridMarker) -> dict:
+        c = Cue()
+        c.type = Cue.Type.Grid
+        c.name = "Beat Marker"
+        c.start = marker.start
+        cuedict = self.__generate_cue(c)
         return cuedict
     
     @staticmethod
@@ -323,13 +366,13 @@ class TraktorWriter:
                 t_e.remove(e)
             for c in t.cues:
                 ET.SubElement(t_e, "CUE_V2", self.__generate_cue(c))
+            for g in t.grids:
+                e = ET.SubElement(t_e, "CUE_V2", self.__generate_grid_marker(g))
+                ET.SubElement(e, "GRID", {"BPM": str(g.bpm)})
             return t_e  
         
         for t_e in coll_elem.findall('ENTRY'):
             lock = t_e.attrib.get('LOCK')
-            title = t_e.attrib.get('TITLE')
-            artist = t_e.attrib.get('ARTIST')
-            
             location = t_e.find('LOCATION')
             filename = location.attrib.get('FILE') if location is not None else ""
 
@@ -452,15 +495,15 @@ class OptionalOperations:
     def apply(self, lib : Library) -> Library:
         lib.track_dict = self.__prune_missing_tracks(lib.track_dict)
 
+        if self.config.getboolean("Options", "SmoothenGridMarkers", fallback=True):
+            lib.track_dict = self.__prune_redundant_grid_markers(lib.track_dict)
+
         if self.config.getboolean("Options", "FixCuePositions", fallback=True):
             lib.track_dict = self.__tk_fix_cue_positions(lib.track_dict)
 
         quantization = self.config.getfloat("Options", "LoopQuantization", fallback=0.0)
-        if quantization >= 1.0/8.0: # minimum 32nd note quantization
+        if quantization >= 1.0/8.0: # minimum: 32nd note quantization
             lib.track_dict = self.__tk_quantize_loops(lib.track_dict, quantization)
-
-        if self.config.getboolean("Options", "GridMarkerFromCue", fallback=False):    
-            lib.track_dict = self.__tk_add_grid_marker(lib.track_dict)
 
         if self.config.getboolean("Options", "S8_AutoAssignCueToPads", fallback=False):
             lib.track_dict = self.__tk_s8_assign_cues_to_pads(lib.track_dict)
@@ -475,15 +518,29 @@ class OptionalOperations:
 
         for tid in tracks:
             t = tracks[tid]
-            ourl = urllib.parse.urlparse(t.fileurl)
-            path = os.path.normpath(ourl.path)
-            path = urllib.request.url2pathname(path)
+            path = Utils.url2path(t.fileurl)
             if not os.path.isfile(path):
                 logging.info(f"Pruning missing track: {t.name} @ {t.fileurl}")
                 pruned_ids.append(tid)
 
         for tid in pruned_ids:            
             del tracks[tid]
+        
+        return tracks
+    
+    def __prune_redundant_grid_markers(self, tracks : dict) -> Library:
+        """
+        Remove adjacent grid markers with less than 0.5% BPM change.
+        """
+        for tid in tracks:
+            grids = []
+            lastg = GridMarker()
+            for g in tracks[tid].grids:
+                if round(g.bpm) > 0.1 and abs(g.bpm - lastg.bpm)/g.bpm > 0.005:
+                    grids.append(g)
+                    lastg = g
+
+            tracks[tid].grids = grids
         
         return tracks
 
@@ -529,9 +586,7 @@ class OptionalOperations:
             if extension == ".m4a":
                 dcue = -0.048
             elif extension == ".mp3":
-                ourl = urllib.parse.urlparse(t.fileurl)
-                path = os.path.normpath(ourl.path)
-                path = urllib.request.url2pathname(path)
+                path = Utils.url2path(t.fileurl)
                 dcue = self.__get_mp3_offset(path)
             else:
                 continue
@@ -540,6 +595,8 @@ class OptionalOperations:
                 logging.debug("Offsetting cues in '{}' by {} seconds.".format(t.name, dcue))
                 for i in range(0, len(t.cues)):
                     t.cues[i].start = t.cues[i].start + dcue
+                for j in range(0, len(t.grids)):
+                    t.grids[j].start = t.grids[j].start + dcue
                 tracks[tid] = t
 
         return tracks
@@ -560,24 +617,6 @@ class OptionalOperations:
 
         return tracks
 
-    def __tk_add_grid_marker(self, tracks : dict) -> dict:
-        """
-        Assumption: [mem]cues are at the 1-downbeat.
-        Creates a grid marker from the second [mem]cue, or first, if only one is available.
-        Rationale: the *very* first [mem]cue might be off the 1s.
-        """
-        for tid in tracks:
-            t = tracks[tid]
-            l = len(t.cues)
-            if l > 0:
-                gridcue = Cue()
-                gridcue.start = t.cues[1 if l > 1 else 0].start
-                gridcue.type = Cue.Type.Grid
-                gridcue.name = "Grid"
-                t.cues.insert(0, gridcue)
-                tracks[tid] = t
-        return tracks
-
     def __tk_s8_assign_cues_to_pads(self, tracks : dict) -> dict:
         """
         Attribute pads to (a subset) of cues, so that they're visible on the S5/S8.
@@ -587,7 +626,7 @@ class OptionalOperations:
             t = tracks[tid]
             pad = 7
             for i in reversed(range(0, len(t.cues))):
-                if t.cues[i].num < 0 and t.cues[i].type != Cue.Type.Grid:
+                if t.cues[i].num < 0:
                     t.cues[i].num = pad if pad >= 5 else -1
                     # memcues on the last half are FadeOuts; Load otherwise (FadeIns cause Traktor to autoplay)
                     t.cues[i].type = Cue.Type.FadeOut if (t.cues[i].start / t.duration) > 0.5 else Cue.Type.Load
