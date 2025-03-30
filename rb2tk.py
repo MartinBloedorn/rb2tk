@@ -269,7 +269,7 @@ class TraktorWriter:
         """
         if sys.platform == "darwin" and self.volume == "":
             self.volume = str(subprocess.run(["diskutil info -plist / | plutil -extract VolumeName raw - -o -"], 
-                                               shell=True, capture_output=True).stdout.strip())
+                                               shell=True, capture_output=True).stdout.decode('ascii').strip())
         return self.volume
 
     def __generate_location(self, fileurl : str) -> dict:
@@ -288,7 +288,7 @@ class TraktorWriter:
 
         locdict["VOLUMEID"] = ""
         locdict["FILE"] = tokens.pop(-1) if len(tokens) > 0 else ""
-        locdict["DIR"] = self.__sep.join(tokens)
+        locdict["DIR"] = self.__sep.join(tokens) + self.__sep
         return locdict
 
     def __generate_cue(self, cue : Cue) -> dict:
