@@ -4,6 +4,7 @@
 import os
 import sys
 import uuid
+import math
 import argparse
 import logging
 import configparser
@@ -56,6 +57,9 @@ class GridMarker:
     def __init__(self):
         self.start = 0.0
         self.bpm = 0.0
+        self.timesig = [4, 4]
+        self.beat = 0
+        """ 0 = marker is on downbeat """
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -63,6 +67,9 @@ class GridMarker:
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 class Track:
     def __init__(self):
+        cues: list[Cue]
+        grids: list[GridMarker]
+
         self.id = ""
         self.name = ""
         self.artist = ""
@@ -196,8 +203,10 @@ class RekordboxReader:
 
     def __make_grid_marker(self, marker_dict) -> Cue:
         g = GridMarker()
-        g.start = float(marker_dict['Inizio'])
-        g.bpm = float(marker_dict['Bpm'])
+        g.start   = float(marker_dict['Inizio'])
+        g.bpm     = float(marker_dict['Bpm'])
+        g.beat    = int(marker_dict['Battito']) - 1
+        g.timesig = [int(x) for x in marker_dict['Metro'].split("/")]
         return g
 
     def __parse_playlists(self, path_xml) -> Playlist:
@@ -318,10 +327,16 @@ class TraktorWriter:
         return cuedict
     
     def __generate_grid_marker(self, marker : GridMarker) -> dict:
+        num = marker.timesig[0]
+        den = marker.timesig[1]
+        # If the marker doesn't start on the downbeat, offset its start to the next downbeat:
+        dt = 60.0/(marker.bpm * float(den/4))
+        beatoffset = (num - marker.beat) % num 
+
         c = Cue()
         c.type = Cue.Type.Grid
         c.name = "Beat Marker"
-        c.start = marker.start
+        c.start = marker.start + (dt * beatoffset)
         cuedict = self.__generate_cue(c)
         return cuedict
     
@@ -354,6 +369,7 @@ class TraktorWriter:
             t_e.attrib['LOCK'] = "1" if lock else "0"
 
             # self.__get_child(t_e, "LOCATION", self.__generate_location(t.fileurl))
+            # TODO: update BPM if overwriting track.
             self.__get_child(t_e, "ALBUM", {"TITLE": t.album})
             self.__get_child(t_e, "INFO", self.__generate_info(t))
             self.__get_child(t_e, "MODIFICATION_INFO", {"AUTHOR_TYPE": "user"})
@@ -400,7 +416,7 @@ class TraktorWriter:
             track = track_dict[track_id]
             locdict = self.__generate_location(track.fileurl)
             attrib = {}
-            attrib["KEY"] = locdict["VOLUME"] + locdict["DIR"] + self.__sep + locdict["FILE"]
+            attrib["KEY"] = locdict["VOLUME"] + locdict["DIR"] + locdict["FILE"]
             attrib["TYPE"] = "TRACK"
             return attrib
         else:
@@ -607,12 +623,21 @@ class OptionalOperations:
         @param tracks       Track collection.
         @param quantization Beat amount (or fraction) to quantize to, e.g, 1.0=quarter note, 0.5=eight note.
         """
+        def get_bpm_for_cue(cue: Cue, track: Track) -> float:
+            for g in reversed(track.grids):
+                if cue.start > g.start or math.isclose(cue.start, g.start, rel_tol=1e-3):
+                    return g.bpm
+            # default to track's overall bpm if a cue was somehow before the first marker:
+            return t.bpm
+
         for tid in tracks:
-            t = tracks[tid]
-            if t.bpm > 0:
-                k = float(quantization)*60.0/t.bpm 
-                for i in range(0, len(t.cues)):
-                    n = float(round(t.cues[i].len/k))
+            t = tracks[tid]    
+            for i in range(0, len(t.cues)):
+                c = t.cues[i]
+                b = get_bpm_for_cue(c, t)
+                if b > 0.1:
+                    k = float(quantization)*60.0/b
+                    n = float(round(c.len/k))
                     t.cues[i].len = n*k
 
         return tracks
