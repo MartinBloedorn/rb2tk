@@ -6,7 +6,7 @@
 - [x] Merge playlists with existing Traktor playlists.
 - [ ] ~~Generate stable UUIDs for playlists.~~
 - [x] Selectively overwrite metadata or only cues.
-- [ ] Automatically backup a target file when overwriting it; (backup strategies: none, simple, incremental)
+- [x] Automatically backup a target file when overwriting it; (backup strategies: none, simple, incremental)
 - [ ] Support different origin/destination paths (relocation).
 - [ ] ~~Fix key representation in files: Traktor doesn't understand "Gmin/Gmaj", but "Gm/G".~~
 - [ ] ~~Merge playlists, update ones coming from RB (use UUID as identifier: hash the name)~~
@@ -15,10 +15,11 @@
 - [x] Rounding errors in exported loop lengths.
 - [x] Support for (flexible) beat grids.
     - [x] Deal with 'Battito' != 1.
-- [ ] Make export parent folder name ('rekordbox') configurable.
+- [x] Make export parent folder name ('rekordbox') configurable.
 - [ ] Update BPM if overwriting track.
 
 ## Bugs
 
 - [x] Grid off in track "Simba".
+- [ ] Grid off in track Brujo Wayuu (BPM was 115.63... instead of 116).
 - [x] Incorrect loop-quantization behavior on tracks with flexible beatgrids.

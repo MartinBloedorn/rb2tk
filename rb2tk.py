@@ -6,12 +6,14 @@ import sys
 import uuid
 import math
 import argparse
+import shutil
 import logging
 import configparser
 import subprocess
 
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+from datetime import datetime
 
 from enum import Enum
 
@@ -87,9 +89,9 @@ class Track:
         self.rating = 0
 
     def __str__(self):
-        return "{}:\t{} ({}) [{}, {}, {} cues]" \
-            .format(self.id, self.name, self.artist,
-                    self.tonality, self.bpm, len(self.cues))
+        return "{}:\t{} ({} :: {}) [{}, {}, {} cue(s), {} grid(s)]" \
+            .format(self.id, self.name, self.artist, self.album,
+                    self.tonality, self.bpm, len(self.cues), len(self.grids))
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -137,6 +139,35 @@ class Utils:
         path = os.path.normpath(ourl.path)
         path = urllib.request.url2pathname(path)
         return path
+    
+    @staticmethod
+    # Method happily lifted from https://stackoverflow.com/a/4590052
+    def xml_indent(elem: ET.Element, level=0):
+        i = "\n" + level*"  "
+        j = "\n" + (level-1)*"  "
+        if len(elem):
+            if not elem.text or not elem.text.strip():
+                elem.text = i + "  "
+            if not elem.tail or not elem.tail.strip():
+                elem.tail = i
+            for subelem in elem:
+                Utils.xml_indent(subelem, level+1)
+            if not elem.tail or not elem.tail.strip():
+                elem.tail = j
+        else:
+            if level and (not elem.tail or not elem.tail.strip()):
+                elem.tail = j
+        return elem
+    
+    @staticmethod
+    def make_backup_of(filename: str):
+        if os.path.exists(filename):
+            # AI generated:
+            mtime = os.path.getmtime(filename)
+            timestamp = datetime.fromtimestamp(mtime).strftime("%Y%m%d_%H%M%S")
+            bak_filename = f"{os.path.splitext(filename)[0]}_{timestamp}.nml.bak"
+            shutil.copy2(filename, bak_filename)
+            logging.info(f"Backup file created: {bak_filename}")
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -153,11 +184,11 @@ class RekordboxReader:
             logging.error("File doesn't exist: {}".format(path_xml))
         else:
             logging.debug("Reading: {}".format(path_xml))
-            l.track_dict = self.__parse_tracks(path_xml)
-            l.playl_tree = self.__parse_playlists(path_xml)
+            l.track_dict = self._parse_tracks(path_xml)
+            l.playl_tree = self._parse_playlists(path_xml)
         return l
 
-    def __parse_tracks(self, path_xml):
+    def _parse_tracks(self, path_xml):
         tree = ET.parse(path_xml)
         root = tree.getroot()
         tracks = {}
@@ -181,10 +212,10 @@ class RekordboxReader:
             t.label = a['Label']
 
             for mark_elem in track_elem.iter('POSITION_MARK'):
-                t.cues.append(self.__make_cue(mark_elem.attrib))
+                t.cues.append(self._make_cue(mark_elem.attrib))
 
             for tempo_elem in track_elem.iter('TEMPO'):
-                t.grids.append(self.__make_grid_marker(tempo_elem.attrib))
+                t.grids.append(self._make_grid_marker(tempo_elem.attrib))
 
             t.cues.sort(key=lambda c: c.start)
             tracks[t.id] = t
@@ -192,7 +223,7 @@ class RekordboxReader:
         logging.debug("{} tracks found.".format(len(tracks)))
         return tracks
 
-    def __make_cue(self, cue_dict) -> Cue:
+    def _make_cue(self, cue_dict) -> Cue:
         c = Cue()
         c.start = float(cue_dict['Start'])
         c.len = (float(cue_dict['End']) - c.start) if 'End' in cue_dict else 0.0
@@ -201,7 +232,7 @@ class RekordboxReader:
         c.type = Cue.Type.Cue
         return c
 
-    def __make_grid_marker(self, marker_dict) -> Cue:
+    def _make_grid_marker(self, marker_dict) -> Cue:
         g = GridMarker()
         g.start   = float(marker_dict['Inizio'])
         g.bpm     = float(marker_dict['Bpm'])
@@ -209,18 +240,18 @@ class RekordboxReader:
         g.timesig = [int(x) for x in marker_dict['Metro'].split("/")]
         return g
 
-    def __parse_playlists(self, path_xml) -> Playlist:
+    def _parse_playlists(self, path_xml) -> Playlist:
         tree = ET.parse(path_xml)
         root = tree.getroot()
         playl_root = None
 
         playl_elem = root.find('PLAYLISTS')
         for child in playl_elem:
-            playl_root = self.__make_node_recursive(child)
+            playl_root = self._make_node_recursive(child)
 
         return playl_root
 
-    def __make_node_recursive(self, node_elem) -> Playlist:
+    def _make_node_recursive(self, node_elem) -> Playlist:
         a = node_elem.attrib
         p = Playlist()
         p.name = a['Name']
@@ -230,7 +261,7 @@ class RekordboxReader:
             if p.type == Playlist.Type.List and t_e.tag == "TRACK":
                 p.children.append(t_e.attrib['Key'])
             elif p.type == Playlist.Type.Folder and t_e.tag == "NODE":
-                p.children.append(self.__make_node_recursive(t_e))
+                p.children.append(self._make_node_recursive(t_e))
 
         return p
 
@@ -245,13 +276,20 @@ class TraktorWriter:
         self.__sep = "/:"
         pass
 
-    def write(self, lib : Library, path_xml : str):
-        root = self.__init_dom(path_xml)
-        root = self.__render_tracks(root, lib)
-        root = self.__render_playlists(root, lib)
-        self.__write_to_output(path_xml, root)
+    def write(self, lib : Library, path_xml : str) -> bool:
+        root = self._init_dom(path_xml)
+        if root is None:
+            return False
+        root = self._render_tracks(root, lib)
+        root = self._render_playlists(root, lib)
+        wrok = self._write_to_output(path_xml, root)
+        if wrok:
+            logging.info("Wrote output to file: {}".format(path_xml))
+        else:
+            logging.error("Failed to write to location: {}".format(path_xml))
+        return wrok
 
-    def __init_dom(self, path_xml : str):
+    def _init_dom(self, path_xml : str):
         root = None
         
         if self.config.getboolean("Library", "MergeOutput", fallback=True) \
@@ -260,8 +298,8 @@ class TraktorWriter:
             try:
                 tree = ET.parse(path_xml)
                 root = tree.getroot()
-            except:
-                logging.warning("Existing output file isn't valid XML': {}".format(path_xml))
+            except Exception as e:
+                logging.warning(f"Existing output file isn't valid XML': {e}")
 
         if root is None:
             root = ET.Element("NML", {"VERSION": "19"})
@@ -270,7 +308,7 @@ class TraktorWriter:
                 
         return root
     
-    def __get_path_volume(self, path : str) -> str:
+    def _get_path_volume(self, path : str) -> str:
         """
         For macOS only. Extracts the name of the current '/' Volume.
         
@@ -281,7 +319,7 @@ class TraktorWriter:
                                                shell=True, capture_output=True).stdout.decode('ascii').strip())
         return self.volume
 
-    def __generate_location(self, fileurl : str) -> dict:
+    def _generate_location(self, fileurl : str) -> dict:
         """
         Generates attribute dictionary for a LOCATION element from a file URL.
         {"DIR": ..., "FILE", ..., "VOLUME": ...}
@@ -291,7 +329,7 @@ class TraktorWriter:
         locdict = {}
 
         if sys.platform == "darwin":            
-            locdict["VOLUME"] = self.__get_path_volume(path)
+            locdict["VOLUME"] = self._get_path_volume(path)
         else:
             locdict["VOLUME"] = tokens.pop(1) if len(tokens) > 1 else "" 
 
@@ -300,7 +338,7 @@ class TraktorWriter:
         locdict["DIR"] = self.__sep.join(tokens) + self.__sep
         return locdict
 
-    def __generate_cue(self, cue : Cue) -> dict:
+    def _generate_cue(self, cue : Cue) -> dict:
         """
         Generates attribute dictionary for a CUE_V2 element from a file URL.
         {"NAME": ..., "TYPE", ..., "START": ...}
@@ -326,7 +364,7 @@ class TraktorWriter:
         cuedict["HOTCUE"] = str(cue.num)
         return cuedict
     
-    def __generate_grid_marker(self, marker : GridMarker) -> dict:
+    def _generate_grid_marker(self, marker : GridMarker) -> dict:
         num = marker.timesig[0]
         den = marker.timesig[1]
         # If the marker doesn't start on the downbeat, offset its start to the next downbeat:
@@ -337,18 +375,18 @@ class TraktorWriter:
         c.type = Cue.Type.Grid
         c.name = "Beat Marker"
         c.start = marker.start + (dt * beatoffset)
-        cuedict = self.__generate_cue(c)
+        cuedict = self._generate_cue(c)
         return cuedict
     
     @staticmethod
-    def __get_child(parent, tag : str, attrib : dict = {}):
+    def _get_child(parent, tag : str, attrib : dict = {}):
         """
         Retrieves or creates a child af a given tag under a certain parent. 
         """
         node = parent.find(tag)
         return node if node is not None else ET.SubElement(parent, tag, attrib)
     
-    def __generate_info(self, track : Track) -> dict:
+    def _generate_info(self, track : Track) -> dict:
         infodict = {}
         infodict["BITRATE"] = "320" # TODO
         infodict["KEY"] = track.tonality 
@@ -359,31 +397,31 @@ class TraktorWriter:
         infodict["GENRE"] = track.genre
         return infodict
 
-    def __render_tracks(self, root, lib : Library):
+    def _render_tracks(self, root, lib : Library):
         track_dict = dict(lib.track_dict) # copy
         coll_elem = root.find('COLLECTION')
         
-        def __render_track(t_e, t, lock=True):
+        def _render_track(t_e, t, lock=True):
             t_e.attrib['TITLE'] = t.name
             t_e.attrib['ARTIST'] = t.artist
             t_e.attrib['LOCK'] = "1" if lock else "0"
 
-            # self.__get_child(t_e, "LOCATION", self.__generate_location(t.fileurl))
+            # self._get_child(t_e, "LOCATION", self._generate_location(t.fileurl))
             # TODO: update BPM if overwriting track.
-            self.__get_child(t_e, "ALBUM", {"TITLE": t.album})
-            self.__get_child(t_e, "INFO", self.__generate_info(t))
-            self.__get_child(t_e, "MODIFICATION_INFO", {"AUTHOR_TYPE": "user"})
-            self.__get_child(t_e, "TEMPO", {"BPM_QUALITY": "100", "BPM": str(t.bpm)})
+            self._get_child(t_e, "ALBUM", {"TITLE": t.album})
+            self._get_child(t_e, "INFO", self._generate_info(t))
+            self._get_child(t_e, "MODIFICATION_INFO", {"AUTHOR_TYPE": "user"})
+            self._get_child(t_e, "TEMPO", {"BPM_QUALITY": "100", "BPM": str(t.bpm)})
 
             # Always overwrite location to ensure we're synced: 
-            self.__get_child(t_e, "LOCATION").attrib = self.__generate_location(t.fileurl)
+            self._get_child(t_e, "LOCATION").attrib = self._generate_location(t.fileurl)
 
             for e in t_e.findall("CUE_V2"):
                 t_e.remove(e)
             for c in t.cues:
-                ET.SubElement(t_e, "CUE_V2", self.__generate_cue(c))
+                ET.SubElement(t_e, "CUE_V2", self._generate_cue(c))
             for g in t.grids:
-                e = ET.SubElement(t_e, "CUE_V2", self.__generate_grid_marker(g))
+                e = ET.SubElement(t_e, "CUE_V2", self._generate_grid_marker(g))
                 ET.SubElement(e, "GRID", {"BPM": str(g.bpm)})
             return t_e  
         
@@ -397,24 +435,24 @@ class TraktorWriter:
                 basename = os.path.basename(urllib.request.url2pathname(t.fileurl))
                 if basename == filename:
                     if lock != "1":
-                        __render_track(t_e, t, False)
+                        _render_track(t_e, t, False)
                     del track_dict[k]
             
         for uuid, t in track_dict.items():
             t_e = ET.SubElement(coll_elem, "ENTRY")
-            __render_track(t_e, t, False)
+            _render_track(t_e, t, False)
             logging.info(f"Added '{t.name}' by '{t.artist}' to collection.")
             
         coll_elem.attrib["ENTRIES"] = str(len(coll_elem))
         return root
 
-    def __generate_playl_track(self, track_id : str, track_dict : dict) -> dict:
+    def _generate_playl_track(self, track_id : str, track_dict : dict) -> dict:
         """
         Generates attribute dictionary for a PRIMARYKEY ENTRY of a PLAYLIST NODE.
         """
         if track_id in track_dict:
             track = track_dict[track_id]
-            locdict = self.__generate_location(track.fileurl)
+            locdict = self._generate_location(track.fileurl)
             attrib = {}
             attrib["KEY"] = locdict["VOLUME"] + locdict["DIR"] + locdict["FILE"]
             attrib["TYPE"] = "TRACK"
@@ -422,7 +460,7 @@ class TraktorWriter:
         else:
             return None
 
-    def __generate_node_recursive(self, parent, playl : Playlist, track_dict : dict):
+    def _generate_node_recursive(self, parent, playl : Playlist, track_dict : dict):
         """
         @param parent       Parent DOM node.
         @param playl        Current Playlist node.
@@ -435,7 +473,7 @@ class TraktorWriter:
             node.attrib["TYPE"] = "FOLDER"
             subnode = ET.SubElement(node, "SUBNODES", {"COUNT": str(len(playl.children))})
             for c in playl.children:
-                self.__generate_node_recursive(subnode, c, track_dict)
+                self._generate_node_recursive(subnode, c, track_dict)
         elif playl.type == Playlist.Type.List:
             node.attrib["TYPE"] = "PLAYLIST"
             playlist = ET.SubElement(node, "PLAYLIST",
@@ -443,23 +481,23 @@ class TraktorWriter:
                                       "TYPE": "LIST",
                                       "UUID": "/db/Playlist/" + str(uuid.uuid4())})
             for c in playl.children:
-                playl_track = self.__generate_playl_track(c, track_dict)
+                playl_track = self._generate_playl_track(c, track_dict)
                 if playl_track is not None:
                     entry = ET.SubElement(playlist, "ENTRY")
-                    ET.SubElement(entry, "PRIMARYKEY", self.__generate_playl_track(c, track_dict))
+                    ET.SubElement(entry, "PRIMARYKEY", self._generate_playl_track(c, track_dict))
                 else: 
                     logging.info(f"Skipping missing track ID {c} in playlist '{playl.name}'")
 
         return node
 
-    def __render_playlists(self, root, lib : Library):
+    def _render_playlists(self, root, lib : Library):
         # All rekordbox playlists will be exported under this folder; manual changes to it will be overwritten.
-        rb_playlist_name = "rekordbox"
+        rb_playlist_name = self.config.get("Library", "ParentPlaylistFolder", fallback="rekordbox")
 
         if lib.playl_tree is not None:
             playlists_e = root.find('PLAYLISTS')
-            playlroot_e = self.__get_child(playlists_e, "NODE", {"NAME": "$ROOT", "TYPE": "FOLDER"})
-            psubnodes_e = self.__get_child(playlroot_e, "SUBNODES", {"COUNT": "1"})
+            playlroot_e = self._get_child(playlists_e, "NODE", {"NAME": "$ROOT", "TYPE": "FOLDER"})
+            psubnodes_e = self._get_child(playlroot_e, "SUBNODES", {"COUNT": "1"})
             
             for node in psubnodes_e.findall("NODE"):
                 if node.attrib["TYPE"] == "FOLDER" and node.attrib["NAME"] == rb_playlist_name:
@@ -468,65 +506,45 @@ class TraktorWriter:
 
             exportroot_e = ET.SubElement(psubnodes_e, "NODE", {"NAME": rb_playlist_name, "TYPE": "FOLDER"})
         
-            self.__generate_node_recursive(exportroot_e, lib.playl_tree, lib.track_dict)
+            self._generate_node_recursive(exportroot_e, lib.playl_tree, lib.track_dict)
         return root
-    
-    # Method happily lifted from https://stackoverflow.com/a/4590052
-    def __xml_indent(self, elem, level=0):
-        i = "\n" + level*"  "
-        j = "\n" + (level-1)*"  "
-        if len(elem):
-            if not elem.text or not elem.text.strip():
-                elem.text = i + "  "
-            if not elem.tail or not elem.tail.strip():
-                elem.tail = i
-            for subelem in elem:
-                self.__xml_indent(subelem, level+1)
-            if not elem.tail or not elem.tail.strip():
-                elem.tail = j
-        else:
-            if level and (not elem.tail or not elem.tail.strip()):
-                elem.tail = j
-        return elem   
 
-    def __write_to_output(self, xml_path, root):
-        self.__xml_indent(root)
+    def _write_to_output(self, xml_path, root) -> bool:
+        Utils.xml_indent(root)
         tree = ET.ElementTree(root)
-        if tree.write(xml_path, encoding='utf-8', xml_declaration=True) is None:
-            logging.info("Wrote output to file: {}".format(xml_path))
-        else:
-            logging.error("Failed to write to location: {}".format(xml_path))
+        return tree.write(xml_path, encoding='utf-8', xml_declaration=True) is None
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-#
+# OptionalOperations
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-    
-
 class OptionalOperations:
     def __init__(self, config):
         self.config = config
         pass
 
     def apply(self, lib : Library) -> Library:
-        lib.track_dict = self.__prune_missing_tracks(lib.track_dict)
+        lib.track_dict = self._prune_missing_tracks(lib.track_dict)
 
         if self.config.getboolean("Options", "SmoothenGridMarkers", fallback=True):
-            lib.track_dict = self.__prune_redundant_grid_markers(lib.track_dict)
+            lib.track_dict = self._prune_redundant_grid_markers(lib.track_dict)
 
         if self.config.getboolean("Options", "FixCuePositions", fallback=True):
-            lib.track_dict = self.__tk_fix_cue_positions(lib.track_dict)
+            lib.track_dict = self._tk_fix_cue_positions(lib.track_dict)
 
         quantization = self.config.getfloat("Options", "LoopQuantization", fallback=0.0)
         if quantization >= 1.0/8.0: # minimum: 32nd note quantization
-            lib.track_dict = self.__tk_quantize_loops(lib.track_dict, quantization)
+            lib.track_dict = self._tk_quantize_loops(lib.track_dict, quantization)
+
+        if self.config.getboolean("Options", "BackupExistingCollection", fallback=True):
+            Utils.make_backup_of(config["Library"]["TraktorNmlOutput"])
 
         if self.config.getboolean("Options", "S8_AutoAssignCueToPads", fallback=False):
-            lib.track_dict = self.__tk_s8_assign_cues_to_pads(lib.track_dict)
+            lib.track_dict = self._tk_s8_assign_cues_to_pads(lib.track_dict)
         
         return lib
     
-    def __prune_missing_tracks(self, tracks : dict) -> Library: 
+    def _prune_missing_tracks(self, tracks : dict) -> Library: 
         """
         Remove tracks with missing files from exported library.
         """
@@ -544,7 +562,7 @@ class OptionalOperations:
         
         return tracks
     
-    def __prune_redundant_grid_markers(self, tracks : dict) -> Library:
+    def _prune_redundant_grid_markers(self, tracks : dict) -> Library:
         """
         Remove adjacent grid markers with less than 0.5% BPM change.
         """
@@ -560,7 +578,7 @@ class OptionalOperations:
         
         return tracks
 
-    def __get_mp3_offset(self, mp3_file_path):
+    def _get_mp3_offset(self, mp3_file_path):
         offset_44k1 = 0.026 # Offsets in ms for each sample rate, as per RB release notes.
         offset_48k0 = 0.024
 
@@ -590,7 +608,7 @@ class OptionalOperations:
             logging.error(f"Error reading MP3 metadata of {mp3_file_path}: {e}")
             return 0.0
     
-    def __tk_fix_cue_positions(self, tracks : dict) -> Library: 
+    def _tk_fix_cue_positions(self, tracks : dict) -> Library: 
         """
         Check doc/Traktor Cue Shift.md for more information on this function.
         """       
@@ -603,7 +621,7 @@ class OptionalOperations:
                 dcue = -0.048
             elif extension == ".mp3":
                 path = Utils.url2path(t.fileurl)
-                dcue = self.__get_mp3_offset(path)
+                dcue = self._get_mp3_offset(path)
             else:
                 continue
                 
@@ -617,7 +635,7 @@ class OptionalOperations:
 
         return tracks
     
-    def __tk_quantize_loops(self, tracks : dict, quantization) -> Library:
+    def _tk_quantize_loops(self, tracks : dict, quantization) -> Library:
         """
         Quantizes loops. 
         @param tracks       Track collection.
@@ -642,7 +660,7 @@ class OptionalOperations:
 
         return tracks
 
-    def __tk_s8_assign_cues_to_pads(self, tracks : dict) -> dict:
+    def _tk_s8_assign_cues_to_pads(self, tracks : dict) -> dict:
         """
         Attribute pads to (a subset) of cues, so that they're visible on the S5/S8.
         Behavior is hard-coded to the author's (me) convenience :)
@@ -706,5 +724,5 @@ if __name__ == "__main__":
 
     lib = rr.read(config["Library"]["RekordboxXmlInput"])
     lib = oo.apply(lib)
-    tw.write(lib, config["Library"]["TraktorNmlOutput"])
+    exit(0 if tw.write(lib, config["Library"]["TraktorNmlOutput"]) else 1)
 

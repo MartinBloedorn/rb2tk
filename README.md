@@ -2,7 +2,7 @@
 
 `rb2tk` is a simple script to convert a Rekordbox XML export to a Traktor NML library. 
 
-The most straightforward use case is downloading and running the `rb2tk.py` in the same folder as a `rb2tk.ini` file containing settings, e.g.:
+Execute it with `python3 rb2tk.py` in the same folder as a `rb2tk.ini` file containing your settings:
 
 ```ini
 [Library]
@@ -12,9 +12,7 @@ TraktorNmlOutput = /path/to/traktor.nml
 FixCuePositions = yes
 ```
 
-Once executed, any imported playlists will appear under a folder called `rekordbox`.
-
-`rb2tk.py` uses only standard Python libraries.
+`rb2tk.py` uses only standard Python libraries. For more options, see `python3 rb2tk.py -h`. 
 
 ## Settings
 
@@ -27,6 +25,7 @@ Available `rb2tk.ini` options are:
   - `FixCuePositions` (`yes/no`, default: `yes`): Will attempt to fix cue shifts/offsets that happen due to how Traktor handles MP3 and M4A/AAC files. See the **Documentation** section below for more information.
   - `LoopQuantization` (`float`, default: `0.0`): Quantizes exported Cue-Loops to the selected beat fraction (i.e., `1.0` = quarter note, `0.5` = eigth note, etc.).
   - `SmoothenGridMarkers` (`yes/no`, default: `yes`): Prunes excessive redundant (i.e., <0.5% BPM change) grid markers that Rekordbox might have generated, which clutter the visualization on Traktor.
+  - `BackupExistingCollection` (`yes/no`, default: `yes`): Creates a backup of the existing collection (i.e., the file targeted by `TraktorNmlOutput`). 
 
 ## Documentation
 
