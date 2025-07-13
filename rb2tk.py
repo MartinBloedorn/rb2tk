@@ -21,6 +21,11 @@ import codecs
 import urllib.parse
 import urllib.request
 
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# rb2tk
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+RB2TK_VERSION = "0.1.0"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Cue & GridMarker
@@ -278,7 +283,7 @@ class TraktorWriter:
 
     def write(self, lib : Library, path_xml : str) -> bool:
         root = self._init_dom(path_xml)
-        if root is None:
+        if root is None or path_xml == '':
             return False
         root = self._render_tracks(root, lib)
         root = self._render_playlists(root, lib)
@@ -492,7 +497,9 @@ class TraktorWriter:
 
     def _render_playlists(self, root, lib : Library):
         # All rekordbox playlists will be exported under this folder; manual changes to it will be overwritten.
-        rb_playlist_name = self.config.get("Library", "ParentPlaylistFolder", fallback="rekordbox")
+        playl_name_fallback = "rekordbox"
+        rb_playlist_name = self.config.get("Library", "ParentPlaylistFolder", fallback="")
+        rb_playlist_name = rb_playlist_name if rb_playlist_name != "" else playl_name_fallback
 
         if lib.playl_tree is not None:
             playlists_e = root.find('PLAYLISTS')
@@ -537,7 +544,7 @@ class OptionalOperations:
             lib.track_dict = self._tk_quantize_loops(lib.track_dict, quantization)
 
         if self.config.getboolean("Options", "BackupExistingCollection", fallback=True):
-            Utils.make_backup_of(config["Library"]["TraktorNmlOutput"])
+            Utils.make_backup_of(self.config["Library"]["TraktorNmlOutput"])
 
         if self.config.getboolean("Options", "S8_AutoAssignCueToPads", fallback=False):
             lib.track_dict = self._tk_s8_assign_cues_to_pads(lib.track_dict)
@@ -686,7 +693,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
                     prog='rb2tk.py',
                     description='Convert a rekordbox XML library into a '
-                                'Traktor Pro 3 NML collection.',
+                                'Traktor Pro 4 NML collection.',
                     epilog='For more info: github.com/martinbloedorn')
 
     parser.add_argument('RekordboxXmlInput', nargs='?', default=None,
@@ -695,6 +702,7 @@ if __name__ == "__main__":
                         help="Output path of generated Traktor NML collection.")
     parser.add_argument('-c', '--conf', action='store', default="rb2tk.ini")
     parser.add_argument('-v', '--verbose', action='count', default=0)
+    parser.add_argument('--version', action='version', version='%(prog)s v' + RB2TK_VERSION)
 
     args = parser.parse_args()
 
