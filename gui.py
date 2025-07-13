@@ -1,13 +1,16 @@
+import rb2tk
+
 from platformdirs import user_config_dir
 import threading
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, font
 
+import configparser
 import logging
+import math
 import sys
-
-from rb2tk import *
+import os
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # NOTICE:
@@ -18,11 +21,15 @@ from rb2tk import *
 
 
 APP_NAME    = "rb2tk_gui"
-APP_VERSION = RB2TK_VERSION
+APP_VERSION = rb2tk.RB2TK_VERSION
 
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # rb2tk_gui
+#
+# Installer: pyinstaller gui.py --name "rb2tk_gui" 
+#               --windowed --onefile
+#               --icon=assets/rb2tk_ico.icns
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
 
@@ -96,7 +103,7 @@ class App(tk.Tk):
         text_handler.setFormatter(log_formatter)
 
         logger = logging.getLogger()
-        logger.setLevel(logging.DEBUG)
+        logger.setLevel(logging.INFO)
         logger.addHandler(stdout_handler)
         logger.addHandler(text_handler)
         
@@ -113,19 +120,20 @@ class App(tk.Tk):
         library_frame = ttk.LabelFrame(self, text="Library", padding=10)
         library_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        self.rb_xml_in  = self._create_labeled_filepicker(library_frame, "Rekordbox XML", "open", 0, "Select input Rekordbox XML file.")
-        self.tk_nml_out = self._create_labeled_filepicker(library_frame, "Traktor NML", "save", 1, "Select output Traktor NML collection.")
+        self.rb_xml_in  = self._create_labeled_filepicker(library_frame, "Rekordbox XML", "open", 0, "Input Rekordbox XML file.")
+        self.tk_nml_out = self._create_labeled_filepicker(library_frame, "Traktor NML", "save", 1, "Target path of generated Traktor NML collection.")
 
         self.merge_var = tk.BooleanVar()
         merge_cb = ttk.Checkbutton(library_frame, text="Merge output", variable=self.merge_var)
         merge_cb.grid(row=2, column=0, sticky="w", pady=(10, 0))
-        ToolTip(merge_cb, "Merge output into a single file")
+        ToolTip(merge_cb, "Merges the newly generated tracks & playlists into the existing Traktor collection.")
 
         ttk.Label(library_frame, text="Parent folder").grid(row=3, column=0, sticky="w", pady=(10, 0))
         self.parent_folder_var = tk.StringVar()
         parent_entry = ttk.Entry(library_frame, textvariable=self.parent_folder_var)
         parent_entry.grid(row=3, column=1, sticky="ew", padx=(5, 0))
-        ToolTip(parent_entry, "Name of the parent folder")
+        ToolTip(parent_entry, "Name of parent folder where Rekorbox playlists will be exported. "
+                "Folder will be created at the root level of the collection, replacing any existing entry.")
         library_frame.columnconfigure(1, weight=1)
 
     def _create_options_panel(self):
@@ -136,19 +144,20 @@ class App(tk.Tk):
         self.fix_cue_var = tk.BooleanVar()
         fix_cue_cb = ttk.Checkbutton(options_frame, text="Fix cue positions", variable=self.fix_cue_var)
         fix_cue_cb.grid(row=0, column=0, sticky="w")
-        ToolTip(fix_cue_cb, "Fix the positions of cues")
+        ToolTip(fix_cue_cb, "Compensates cue offsets caused by codec handling differences. Requires access to all files in the XML library.")
 
         # Smoothen grid markers checkbox
         self.smooth_grid_var = tk.BooleanVar()
         smooth_grid_cb = ttk.Checkbutton(options_frame, text="Smoothen grid markers", variable=self.smooth_grid_var)
         smooth_grid_cb.grid(row=0, column=1, sticky="w", padx=10)
-        ToolTip(smooth_grid_cb, "Smooth the grid markers")
+        ToolTip(smooth_grid_cb, "Prunes redundant (i.e., <0.5% BPM change) grid markers that Rekordbox might generate, "
+                "which clutter the visualization in Traktor.")
 
         # Backup existing collection checkbox
         self.backup_var = tk.BooleanVar()
         backup_cb = ttk.Checkbutton(options_frame, text="Backup existing collection", variable=self.backup_var)
         backup_cb.grid(row=0, column=2, sticky="w", padx=10)#pady=(5,0))
-        ToolTip(backup_cb, "Create backup before modifying")
+        ToolTip(backup_cb, "Automatically backup the existing collection before creating a new one.")
 
         # Loop quantization label + dropdown
         loop_quant_label = ttk.Label(options_frame, text="Loop quantization:")
@@ -157,7 +166,7 @@ class App(tk.Tk):
         self.loop_quant_var = tk.StringVar(value=self.loop_quant_options[0])
         loop_quant_dropdown = ttk.OptionMenu(options_frame, self.loop_quant_var, self.loop_quant_var.get(), *self.loop_quant_options)
         loop_quant_dropdown.grid(row=1, column=1, sticky="w", pady=(5,0))
-        ToolTip(loop_quant_label, "Quantization setting for loops")
+        ToolTip(loop_quant_label, "Quantizes exported Cue-Loops to the selected beat fraction.")
 
         # Make options_frame columns expand nicely
         options_frame.columnconfigure(2, weight=1)
@@ -322,19 +331,23 @@ class App(tk.Tk):
             var.set(file_path)
 
     def run_rb2tk(self):
-        logging.info("Starting " + APP_NAME + " v" + APP_VERSION)
-        config = self._generate_config()
+        result = False
+        try:
+            logging.info("Starting " + APP_NAME + " v" + APP_VERSION)
+            config = self._generate_config()
 
-        rr = RekordboxReader(config)
-        tw = TraktorWriter(config)
-        oo = OptionalOperations(config)
+            rr = rb2tk.RekordboxReader(config)
+            tw = rb2tk.TraktorWriter(config)
+            oo = rb2tk.OptionalOperations(config)
 
-        lib = rr.read(config["Library"]["RekordboxXmlInput"])
-        lib = oo.apply(lib)
-        if tw.write(lib, config["Library"]["TraktorNmlOutput"]):
-            logging.info("Done!")
+            lib = rr.read(config["Library"]["RekordboxXmlInput"])
+            lib = oo.apply(lib)
+            result = tw.write(lib, config["Library"]["TraktorNmlOutput"])
+        except Exception as e:
+            logging.error(str(e))
         else:
-            logging.error("Failed to generate library.")
+            if result:
+                logging.info("Done!")
 
     def on_run(self):
         thread = threading.Thread(target=self.run_rb2tk, daemon=True)
